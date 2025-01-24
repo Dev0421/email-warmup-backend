@@ -1,6 +1,5 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from email_warmup import EmailAccount, DatabaseManager, ReputationMonitor, EmailWarmer
 import sqlite3
 import pandas as pd
 import re
@@ -9,18 +8,21 @@ import smtplib
 from threading import Thread # To send emails in the background
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-
+import os
 # from templates import Template
 # from templates_routes import templates_bp
 
 app = Flask(__name__)
 CORS(app)
 
+# Get the absolute path to the database
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "../email_warmup.db")
+
 def is_valid_email(email):
     email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(email_pattern, email) is not None
 
-db_manager = DatabaseManager()
 def send_email_gmail(sender_email, receiver_email, subject, body, app_password):
     message = MIMEMultipart()
     message['From'] = sender_email
@@ -35,7 +37,7 @@ def send_email_gmail(sender_email, receiver_email, subject, body, app_password):
             server.sendmail(sender_email, receiver_email, message.as_string())
         
         # Update the sent count in the database
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute('''SELECT sent FROM accounts WHERE email = ?''', (sender_email,))
             existing_account = cursor.fetchone()
@@ -57,7 +59,7 @@ def send_email_gmail(sender_email, receiver_email, subject, body, app_password):
                 conn.commit()
 
         # Fetch updated account data
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             accounts = pd.read_sql_query("SELECT * FROM accounts", conn)
         accounts_dict = accounts.to_dict(orient='records')
 
@@ -73,7 +75,10 @@ def send_email_gmail(sender_email, receiver_email, subject, body, app_password):
 
 @app.route('/api/accounts', methods=['GET'])
 def get_items():
-    with sqlite3.connect(db_manager.db_name) as conn:
+    print("here start")
+    print(DB_PATH)
+
+    with sqlite3.connect(DB_PATH) as conn:
         accounts = pd.read_sql_query("""
             SELECT * 
             FROM accounts
@@ -85,7 +90,7 @@ def get_items():
 @app.route('/api/account/getone/<int:id>', methods=['GET'])
 def get_account_by_email(id):
     try:
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             query = """
                 SELECT * 
                 FROM accounts
@@ -113,7 +118,7 @@ def create_smtp_one():
     required_fields = ['email', 'password', 'provider', 'provider_name', 'imap_server', 'smtp_server', 'imap_port', 'smtp_port', 'warmup_style']
     
     try:
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute('''SELECT email FROM accounts WHERE email = ?''', (account_data['email'],))
             existing_account = cursor.fetchone()
@@ -145,7 +150,7 @@ def create_smtp_one():
             ))
             conn.commit()
         print("New account has been created!")
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             accounts = pd.read_sql_query("SELECT * FROM accounts", conn)
         accounts_dict = accounts.to_dict(orient='records')
         return jsonify(accounts_dict)
@@ -160,7 +165,7 @@ def create_one():
     required_fields = ['email', 'password', 'provider', 'imap_server', 'smtp_server', 'imap_port', 'smtp_port', 'app_password', 'warmup_stage', 'sent', 'received']
     print (required_fields)
     try:
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute('''SELECT email FROM accounts WHERE email = ?''', (account_data['email'],))
             existing_account = cursor.fetchone()
@@ -187,7 +192,7 @@ def create_one():
             # Commit changes to the database
             conn.commit()
 
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             accounts = pd.read_sql_query("""
                 SELECT * 
                 FROM accounts
@@ -204,7 +209,7 @@ def delete_one(id):
     try:
         if not id:
             return jsonify({'message': 'id is required'}), 400
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
 
             # Delete the account with the given email
@@ -213,7 +218,7 @@ def delete_one(id):
 
             # Check if any record was deleted
             if cursor.rowcount > 0:
-                with sqlite3.connect(db_manager.db_name) as conn:
+                with sqlite3.connect(DB_PATH) as conn:
                     accounts = pd.read_sql_query("""
                         SELECT * 
                         FROM accounts
@@ -239,7 +244,7 @@ def edit_one():
         return {"error": f"Missing required fields: {', '.join(missing_fields)}"}, 400
 
     try:
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE accounts 
@@ -268,7 +273,7 @@ def edit_one():
 
             conn.commit()
 
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             accounts = pd.read_sql_query("""
                 SELECT * 
                 FROM accounts
@@ -289,7 +294,7 @@ def warm():
     # Get email data from the frontend
     email_json = request.get_json()
     sender_email = email_json['email']
-    with sqlite3.connect(db_manager.db_name) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''SELECT status FROM accounts WHERE email = ?''', (sender_email,))
         account = cursor.fetchone()
@@ -305,7 +310,7 @@ def warm():
                 SET status = ?
                 WHERE email = ?
             ''', (1, sender_email ))
-    with sqlite3.connect(db_manager.db_name) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         accounts = pd.read_sql_query("""
             SELECT * 
             FROM accounts 
@@ -335,7 +340,7 @@ def warm():
                 time.sleep(60 / emails_per_minute)
     email_thread = Thread(target=send_emails_between_accounts)
     email_thread.start()
-    with sqlite3.connect(db_manager.db_name) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         accounts = pd.read_sql_query("""
             SELECT * 
             FROM accounts
@@ -348,7 +353,7 @@ def warm():
 
 @app.route('/api/templates', methods=['GET'])
 def get_all_templates():
-    with sqlite3.connect(db_manager.db_name) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         accounts = pd.read_sql_query("""
             SELECT * 
             FROM templates
@@ -362,7 +367,7 @@ def edit_template(id):
     if not template_data:
         return jsonify({"error": "No data provided"}), 400
     try:
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE templates 
@@ -377,7 +382,7 @@ def edit_template(id):
                 id
             ))
             conn.commit()
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             templates = pd.read_sql_query("SELECT * FROM templates", conn)
         templates_dict = templates.to_dict(orient='records')
         return jsonify(templates_dict), 200
@@ -394,7 +399,7 @@ def create_template():
     if not template_data or not all(key in template_data for key in ['subject', 'content', 'language']):
         return jsonify({"error": "Missing fields: subject, content, and language are required."}), 400
     try:
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute('''SELECT subject FROM templates WHERE subject = ?''', (template_data['subject'],))
             existing_template = cursor.fetchone()
@@ -409,7 +414,7 @@ def create_template():
                 template_data['language']
             ))
             conn.commit()
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             accounts = pd.read_sql_query("SELECT * FROM templates", conn)
         accounts_dict = accounts.to_dict(orient='records')
         return jsonify(accounts_dict), 201 
@@ -426,7 +431,7 @@ def delete_template(id):
     print(f"Deleting template with id: {id}")
     try:
         # Delete the template from the database
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM templates WHERE id = ?", (id,))
             conn.commit()
@@ -436,7 +441,7 @@ def delete_template(id):
                 return jsonify({"error": "Template not found."}), 404
 
         # Fetch remaining templates to return
-        with sqlite3.connect(db_manager.db_name) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             templates = pd.read_sql_query("SELECT * FROM templates", conn)
 
         templates_dict = templates.to_dict(orient='records')
